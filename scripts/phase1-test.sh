@@ -15,7 +15,7 @@ PROMPT="Using the ServiceNow Fluent SDK, create an AI Agent named 'IncidentTriag
 Import from @servicenow/sdk/core. Include all necessary types and exports."
 
 MODELS=(
-  "qwen2.5-coder:32b"
+  "qwen3-coder:30b-a3b-q4_K_M"
   "deepseek-coder-v2:16b-lite-instruct-q4_K_M"
 )
 
