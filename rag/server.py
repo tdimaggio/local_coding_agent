@@ -12,6 +12,7 @@ Usage:
 """
 
 import json
+import re
 import sqlite3
 import struct
 import time
@@ -26,6 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from rag.sn_schema import build_schema_context, is_configured as sn_configured
+from rag.ingest import collect_files, ingest_files, CORE_DIRS
 
 REPO_DIR = Path(__file__).parent.parent.resolve()
 DEFAULT_DB = REPO_DIR / "rag" / "data" / "rag.db"
@@ -34,6 +36,8 @@ OLLAMA_API = "http://localhost:11434"
 EMBED_MODEL = "nomic-embed-text"
 MAIN_MODEL = "deepseek-coder-v2:16b-lite-instruct-q4_K_M"
 EMBED_DIM = 768
+ON_DEMAND_THRESHOLD = 0.4   # score below this triggers on-demand expansion
+CORPUS_DIR = REPO_DIR / "corpus"
 
 # Source type retrieval boost — llms.txt chunks rank higher
 SOURCE_BOOST = {
@@ -195,11 +199,89 @@ def retrieve(req: RetrieveRequest):
     boosted.sort(key=lambda x: x["score"], reverse=True)
     results = boosted[:req.top_k]
 
+    # On-demand expansion: if top results are weak, search the local clone
+    # for relevant files, embed them, and re-retrieve
+    top_score = results[0]["score"] if results else 0.0
+    if top_score < ON_DEMAND_THRESHOLD and CORPUS_DIR.exists():
+        expanded = _on_demand_expand(req.query, conn)
+        if expanded > 0:
+            # Re-run the vector search now that DB has more chunks
+            rows = conn.execute(f"""
+                SELECT c.id, c.source, c.source_type, c.title, c.text,
+                       c.token_count, v.distance
+                FROM chunks_vec v
+                JOIN chunks c ON c.id = v.chunk_id
+                WHERE v.embedding MATCH ? AND k = ?
+                ORDER BY v.distance
+            """, [packed, req.top_k * 3]).fetchall()
+
+            boosted = []
+            for row in rows:
+                boost = SOURCE_BOOST.get(row["source_type"], 1.0)
+                boosted.append({
+                    "id": row["id"], "source": row["source"],
+                    "source_type": row["source_type"], "title": row["title"],
+                    "text": row["text"], "token_count": row["token_count"],
+                    "distance": row["distance"],
+                    "score": (1 - row["distance"]) * boost,
+                    "on_demand": True,
+                })
+            boosted.sort(key=lambda x: x["score"], reverse=True)
+            results = boosted[:req.top_k]
+
     return RetrieveResponse(
         query=req.query,
         chunks=results,
         latency_ms=int((time.time() - t0) * 1000),
     )
+
+
+def _on_demand_expand(query: str, conn: sqlite3.Connection) -> int:
+    """
+    Search the local ServiceNowDocs clone for files matching the query terms,
+    embed any not yet in the DB, and return the count of newly added chunks.
+    """
+    import subprocess
+
+    sn_docs = CORPUS_DIR / "ServiceNowDocs" / "markdown"
+    if not sn_docs.exists():
+        return 0
+
+    # Extract meaningful search terms (skip short/common words)
+    stopwords = {"the", "a", "an", "in", "of", "for", "to", "and", "or",
+                 "is", "are", "how", "what", "using", "with", "that", "this"}
+    terms = [w for w in re.findall(r"[a-z][a-z0-9_]{3,}", query.lower())
+             if w not in stopwords][:5]
+
+    if not terms:
+        return 0
+
+    # grep for matching files across the full clone
+    grep_pattern = "|".join(terms)
+    try:
+        result = subprocess.run(
+            ["grep", "-rl", "--include=*.md", "-E", grep_pattern, str(sn_docs)],
+            capture_output=True, text=True, timeout=10
+        )
+        candidate_paths = [Path(p) for p in result.stdout.strip().splitlines() if p]
+    except Exception:
+        return 0
+
+    # Filter to files not already ingested
+    already_sourced = set(
+        row[0] for row in conn.execute("SELECT DISTINCT source FROM chunks").fetchall()
+    )
+    new_files = [
+        p for p in candidate_paths[:20]  # cap at 20 files per expansion
+        if str(p.relative_to(CORPUS_DIR)) not in already_sourced
+    ]
+
+    if not new_files:
+        return 0
+
+    print(f"  [on-demand] expanding with {len(new_files)} new files for query: {query[:60]}")
+    stats = ingest_files(new_files, CORPUS_DIR, DEFAULT_DB, reset=False)
+    return stats["inserted"]
 
 
 @app.post("/generate", response_model=GenerateResponse)

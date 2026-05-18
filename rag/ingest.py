@@ -248,80 +248,130 @@ def upsert_chunk(conn: sqlite3.Connection, chunk: dict, vector: list[float]) -> 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+# Focused core directories — everything else available on-demand
+CORE_DIRS = [
+    "application-development",
+    "build-workflows",
+    "now-intelligence",
+]
+
+
+def collect_files(corpus_dir: Path, dirs: list[str] | None = None) -> list[Path]:
+    """Collect files to ingest. If dirs specified, only those subdirs of ServiceNowDocs/markdown/."""
+    files: list[Path] = []
+
+    # Always include llms.txt at corpus root
+    llms = corpus_dir / "llms.txt"
+    if llms.exists():
+        files.append(llms)
+
+    sn_docs = corpus_dir / "ServiceNowDocs" / "markdown"
+
+    if dirs:
+        for d in dirs:
+            target = sn_docs / d
+            if target.exists():
+                files.extend(target.rglob("*.md"))
+            else:
+                print(f"  WARN: directory not found: {target}")
+    else:
+        if sn_docs.exists():
+            files.extend(sn_docs.rglob("*.md"))
+
+    return files
+
+
+def ingest_files(files: list[Path], corpus_dir: Path, db_path: Path,
+                 reset: bool = False, batch_size: int = 16) -> dict:
+    """Embed and store a list of files. Returns stats dict."""
+    conn = init_db(db_path, reset=reset)
+    total_chunks = total_inserted = 0
+    t0 = time.time()
+    pending: list[dict] = []
+
+    def flush(batch: list[dict]) -> int:
+        if not batch:
+            return 0
+        vectors = embed([c["text"] for c in batch])
+        n = 0
+        for chunk, vec in zip(batch, vectors):
+            if vec is not None and upsert_chunk(conn, chunk, vec):
+                n += 1
+        conn.commit()
+        return n
+
+    for i, file_path in enumerate(files):
+        chunks = chunk_file(file_path, corpus_dir)
+        if not chunks:
+            continue
+        rel = file_path.relative_to(corpus_dir)
+        print(f"[{i+1}/{len(files)}] {rel} → {len(chunks)} chunks", end="", flush=True)
+        total_chunks += len(chunks)
+        pending.extend(chunks)
+        if len(pending) >= batch_size:
+            n = flush(pending)
+            total_inserted += n
+            print(f" ({n} new)", flush=True)
+            pending = []
+        else:
+            print()
+
+    if pending:
+        total_inserted += flush(pending)
+
+    elapsed = time.time() - t0
+    total_in_db = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+    conn.close()
+    return {
+        "files": len(files),
+        "chunks": total_chunks,
+        "inserted": total_inserted,
+        "total_in_db": total_in_db,
+        "elapsed_s": round(elapsed, 1),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Ingest corpus into sqlite-vec")
     parser.add_argument("--corpus", default=str(DEFAULT_CORPUS), help="Path to corpus dir")
     parser.add_argument("--db", default=str(DEFAULT_DB), help="Path to sqlite-vec DB")
     parser.add_argument("--reset", action="store_true", help="Drop and rebuild the DB")
     parser.add_argument("--batch", type=int, default=16, help="Embedding batch size")
+    parser.add_argument(
+        "--dirs", nargs="*", default=None,
+        help=f"Subdirs of ServiceNowDocs/markdown/ to ingest (default: {CORE_DIRS}). "
+             "Pass --dirs with no args to ingest ALL directories."
+    )
     args = parser.parse_args()
 
     corpus_dir = Path(args.corpus)
     db_path = Path(args.db)
 
+    # --dirs with no values means all; omitted means CORE_DIRS
+    if args.dirs is None:
+        dirs = CORE_DIRS
+    elif len(args.dirs) == 0:
+        dirs = None  # all
+    else:
+        dirs = args.dirs
+
     print(f"Corpus: {corpus_dir}")
     print(f"DB:     {db_path}")
     print(f"Reset:  {args.reset}")
+    print(f"Dirs:   {dirs or 'ALL'}")
     print()
 
-    # Collect files
-    files = list(corpus_dir.rglob("*.md")) + list(corpus_dir.glob("llms.txt"))
-    print(f"Found {len(files)} files to process")
+    files = collect_files(corpus_dir, dirs)
+    print(f"Found {len(files)} files to process\n")
 
-    conn = init_db(db_path, reset=args.reset)
-
-    total_chunks = 0
-    total_inserted = 0
-    t0 = time.time()
-
-    pending_chunks: list[dict] = []
-
-    def flush_batch(batch: list[dict]) -> int:
-        if not batch:
-            return 0
-        texts = [c["text"] for c in batch]
-        vectors = embed(texts)
-        inserted = 0
-        for chunk, vec in zip(batch, vectors):
-            if vec is None:
-                continue  # skip failed embeddings
-            if upsert_chunk(conn, chunk, vec):
-                inserted += 1
-        conn.commit()
-        return inserted
-
-    for i, file_path in enumerate(files):
-        rel = file_path.relative_to(corpus_dir)
-        chunks = chunk_file(file_path, corpus_dir)
-        if not chunks:
-            continue
-
-        print(f"[{i+1}/{len(files)}] {rel} → {len(chunks)} chunks", end="", flush=True)
-        total_chunks += len(chunks)
-
-        pending_chunks.extend(chunks)
-
-        if len(pending_chunks) >= args.batch:
-            inserted = flush_batch(pending_chunks)
-            total_inserted += inserted
-            print(f" ({inserted} new)", flush=True)
-            pending_chunks = []
-        else:
-            print()
-
-    # Flush remainder
-    if pending_chunks:
-        inserted = flush_batch(pending_chunks)
-        total_inserted += inserted
-
-    elapsed = time.time() - t0
-    total_in_db = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+    stats = ingest_files(files, corpus_dir, db_path, reset=args.reset, batch_size=args.batch)
 
     print()
-    print(f"Done in {elapsed:.1f}s")
-    print(f"  Chunks processed : {total_chunks}")
-    print(f"  Newly inserted   : {total_inserted}")
-    print(f"  Total in DB      : {total_in_db}")
+    print(f"Done in {stats['elapsed_s']}s")
+    print(f"  Files processed  : {stats['files']}")
+    print(f"  Chunks processed : {stats['chunks']}")
+    print(f"  Newly inserted   : {stats['inserted']}")
+    print(f"  Total in DB      : {stats['total_in_db']}")
     print(f"  DB path          : {db_path}")
 
 
