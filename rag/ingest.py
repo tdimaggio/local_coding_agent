@@ -154,17 +154,32 @@ def chunk_file(path: Path, corpus_dir: Path) -> list[dict]:
 
 # ── Embedding ─────────────────────────────────────────────────────────────────
 
-def embed(texts: list[str]) -> list[list[float]]:
-    """Batch embed via Ollama nomic-embed-text."""
+def embed(texts: list[str]) -> list[list[float] | None]:
+    """Batch embed via Ollama nomic-embed-text. Returns None for failed chunks."""
     vectors = []
     client = httpx.Client(timeout=60)
     for text in texts:
-        resp = client.post(
-            f"{OLLAMA_API}/api/embeddings",
-            json={"model": EMBED_MODEL, "prompt": text},
-        )
-        resp.raise_for_status()
-        vectors.append(resp.json()["embedding"])
+        # Truncate to ~8000 chars if enormous (nomic has a token limit)
+        truncated = text[:8000] if len(text) > 8000 else text
+        success = False
+        for attempt in range(3):
+            try:
+                resp = client.post(
+                    f"{OLLAMA_API}/api/embeddings",
+                    json={"model": EMBED_MODEL, "prompt": truncated},
+                )
+                resp.raise_for_status()
+                vectors.append(resp.json()["embedding"])
+                success = True
+                break
+            except Exception as e:
+                if attempt == 2:
+                    print(f"\n    WARN: embed failed after 3 attempts — skipping chunk ({e})")
+                    vectors.append(None)
+                else:
+                    time.sleep(1)
+        if not success and len(vectors) < len(texts):
+            vectors.append(None)
     return vectors
 
 
@@ -268,6 +283,8 @@ def main():
         vectors = embed(texts)
         inserted = 0
         for chunk, vec in zip(batch, vectors):
+            if vec is None:
+                continue  # skip failed embeddings
             if upsert_chunk(conn, chunk, vec):
                 inserted += 1
         conn.commit()
