@@ -1,9 +1,10 @@
 # Aider configuration for ServiceNow local agent
 # Targets local Ollama inference — no cloud API calls
 
-# Ollama API compatibility endpoint
-openai-api-base: http://localhost:11434/v1
-openai-api-key: ollama  # Ollama ignores this but Aider requires a value
+# RAG proxy — intercepts requests, injects retrieved context, forwards to Ollama
+# Direct Ollama fallback: http://localhost:11434/v1
+openai-api-base: http://localhost:8766/v1
+openai-api-key: ollama  # ignored by proxy/Ollama but Aider requires a value
 
 # Phase 1 winner: DeepSeek-Coder-V2-Lite (~11s vs Qwen 32B which was unusably slow)
 # Qwen 32B benched — 19GB barely fits in 24GB, memory bandwidth kills it

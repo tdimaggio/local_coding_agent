@@ -23,20 +23,30 @@ fi
 
 # Start RAG service in background
 echo "==> Starting RAG service on :8765..."
-uv run uvicorn rag.server:app --host 127.0.0.1 --port 8765 --reload &
+uv run uvicorn rag.server:app --host 127.0.0.1 --port 8765 &
 RAG_PID=$!
 echo "    RAG PID: $RAG_PID"
 
-# Wait for RAG to be ready
-sleep 2
+# Start RAG proxy in background (Aider → proxy → Ollama)
+echo "==> Starting RAG proxy on :8766..."
+uv run uvicorn rag.proxy:app --host 127.0.0.1 --port 8766 &
+PROXY_PID=$!
+echo "    Proxy PID: $PROXY_PID"
+
+# Wait for services to be ready
+sleep 3
+
+# Verify proxy is up
+if ! curl -sf http://localhost:8766/health &>/dev/null; then
+  echo "WARN: proxy not responding — Aider may lack RAG context"
+fi
 
 # Launch Aider
-echo "==> Launching Aider..."
-echo "    Context: @config/system-prompt.md loaded automatically"
-echo "    Use @corpus/llms.txt or @corpus/ServiceNowDocs/... to reference docs"
+echo "==> Launching Aider (RAG context injected automatically)..."
+echo "    Aider → :8766 (proxy) → RAG → Ollama"
 echo ""
 aider --config "$REPO_DIR/config/aider.conf.yml"
 
 # Cleanup on exit
-kill $RAG_PID 2>/dev/null
-echo "RAG service stopped."
+kill $RAG_PID $PROXY_PID 2>/dev/null
+echo "RAG service and proxy stopped."
