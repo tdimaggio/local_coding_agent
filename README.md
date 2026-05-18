@@ -11,6 +11,7 @@ Built for enterprise POC scenarios where tools like Claude Code are blocked by d
 ```bash
 git clone https://github.com/tdimaggio/local_coding_agent.git
 cd local_coding_agent
+cp .env.example .env  # add your SN instance creds for schema validation
 
 # Mac/Linux
 ./bootstrap.sh
@@ -19,7 +20,12 @@ cd local_coding_agent
 .\bootstrap.ps1
 ```
 
-Then run the Phase 1 gate to pick your model, ingest the corpus, and start coding.
+Then ingest the corpus and start coding:
+
+```bash
+uv run python rag/ingest.py   # ~15 min focused ingest
+./scripts/start.sh            # RAG service + Aider
+```
 
 ---
 
@@ -44,8 +50,8 @@ This agent flips the script: everything runs locally, the corpus is indexed loca
                      ▼
 ┌──────────────────────────────────────────────────┐
 │  Ollama  (localhost:11434)                       │
-│  ├── Main model  DeepSeek-Coder-V2-Lite Q4       │
-│  │     Phase 1 winner — ~11s on M4 24GB          │
+│  ├── DeepSeek-Coder-V2-Lite Q4  (main model)    │
+│  │     Phase 1 winner — ~11s responses on M4     │
 │  └── nomic-embed-text  (embeddings)              │
 └────────────────────┬─────────────────────────────┘
                      │  RAG retrieval
@@ -53,11 +59,22 @@ This agent flips the script: everything runs locally, the corpus is indexed loca
 ┌──────────────────────────────────────────────────┐
 │  FastAPI RAG Service  (localhost:8765)           │
 │  ├── sqlite-vec  vector store                    │
-│  ├── Audit log   every query + result, on-disk   │
+│  ├── On-demand expansion from local clone        │
+│  ├── Live SN schema injection (pre-generation)   │
+│  ├── Audit log  every query + result, on-disk    │
 │  └── Corpus                                      │
-│        ServiceNowDocs/  (46k+ markdown files)    │
-│        llms.txt          Fluent SDK reference    │
-│        customer-docs/    your engagement corpus  │
+│        llms.txt           Fluent SDK reference   │
+│        application-development/  core SDK docs   │
+│        build-workflows/          flows + WFA     │
+│        now-intelligence/         AI Agents       │
+│        + on-demand from full 46k clone           │
+└────────────────────┬─────────────────────────────┘
+                     │  Table REST API
+                     ▼
+┌──────────────────────────────────────────────────┐
+│  ServiceNow Instance  (optional, for guardrails) │
+│  ├── sys_db_object   table validation            │
+│  └── sys_dictionary  field name verification     │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -65,12 +82,14 @@ This agent flips the script: everything runs locally, the corpus is indexed loca
 
 | Decision | Rationale |
 |---|---|
-| RAG over fine-tuning | Gets 80-90% of the way there in a fraction of the time. Revisit only if RAG hits a clear wall. |
+| RAG over fine-tuning | Gets 80-90% of the way there in a fraction of the time. |
+| DeepSeek-Coder-V2-Lite over Qwen 32B | MoE architecture: 2.4B active params, ~11s responses. Qwen 32B hit memory bandwidth limits on M4 24GB (>1min/response). |
+| Focused corpus + on-demand expansion | Core 3.4k files ingest in ~15 min. Low-confidence queries automatically grep the full 46k clone, embed matching files, and re-retrieve. |
+| Live schema injection | Before generation, RAG server pulls real table/field names from the connected SN instance via Table REST API. Model codes against verified schema, not training data. |
 | sqlite-vec over Chroma | Single file, no daemon, backs up like any SQLite DB. |
 | Aider over Cline | Terminal-native, git-aware, transparent. `--openai-api-base` points it at Ollama. |
 | No Docker | Ollama in Docker on Mac kills Metal GPU passthrough — 5-10x slower inference. |
-| Audit log from day 1 | Retrofitting structured logging is painful. Schema is locked from the start. |
-| System prompt as load-bearing | ServiceNow scope rules, `sn_aia_*` conventions, Fluent SDK idioms — without guardrails the model hallucinates plausible-but-broken GlideScript. |
+| Audit log from day 1 | Schema locked from the start: timestamp, query, retrieved sources, output, model, profile. |
 
 ---
 
@@ -84,7 +103,7 @@ This agent flips the script: everything runs locally, the corpus is indexed loca
 | Ollama | latest | [ollama.com](https://ollama.com) |
 | Aider | latest | `uv tool install aider-chat` |
 
-Ollama must be **running** before bootstrap. On Mac/Linux: `ollama serve`. On Windows: start the Ollama app from the system tray.
+Ollama must be **running** before bootstrap. On Mac/Linux: `ollama serve`. On Windows: start from system tray.
 
 ---
 
@@ -93,43 +112,23 @@ Ollama must be **running** before bootstrap. On Mac/Linux: `ollama serve`. On Wi
 ### 1. Bootstrap
 
 ```bash
-# Mac/Linux
-./bootstrap.sh
-
-# Windows
-.\bootstrap.ps1
-
-# Or directly, any platform
-python bootstrap.py
+./bootstrap.sh        # Mac/Linux
+.\bootstrap.ps1       # Windows
+python bootstrap.py   # Any platform
 ```
 
-Bootstrap is idempotent — safe to re-run. It:
-- Checks all prerequisites
-- Pulls `nomic-embed-text`, `qwen2.5-coder:32b`, and `deepseek-coder-v2:16b-lite-instruct` via Ollama
-- Sets up the Python env via `uv sync`
-- Clones ServiceNowDocs and fetches the Fluent SDK `llms.txt`
+Bootstrap is idempotent — safe to re-run. It checks prereqs, pulls models, runs `uv sync`, and fetches the corpus.
 
-> Model pulls are ~20GB total. Plan accordingly.
+> Model pull: `deepseek-coder-v2:16b-lite-instruct-q4_K_M` (~10GB) + `nomic-embed-text` (~274MB)
 
-### 2. Run the Phase 1 gate
+### 2. Configure credentials (optional — enables live schema guardrails)
 
 ```bash
-./scripts/phase1-test.sh
+cp .env.example .env
+# Set SN_INSTANCE, SN_USERNAME, SN_PASSWORD
 ```
 
-Sends the same Fluent SDK prompt to both candidate models. Outputs TypeScript files to `phase1-output/`. Type-check them to pick the winner:
-
-```bash
-cd phase1-output
-npm init -y && npm install @servicenow/sdk typescript
-npx tsc --noEmit --strict *.ts
-```
-
-Whichever model produces valid TypeScript is your main model. Update `config/aider.conf.yml`:
-
-```yaml
-model: qwen2.5-coder:32b  # or deepseek-coder-v2:16b-lite-instruct
-```
+Without `.env`, the agent works fine — schema validation is silently skipped.
 
 ### 3. Ingest the corpus
 
@@ -137,24 +136,32 @@ model: qwen2.5-coder:32b  # or deepseek-coder-v2:16b-lite-instruct
 uv run python rag/ingest.py
 ```
 
-Chunks and embeds ServiceNowDocs + `llms.txt` into the local sqlite-vec database. Fluent SDK chunks get retrieval priority — the base model has near-zero training data on it.
+Embeds the focused core corpus (~3.4k files: app dev, workflows, AI intelligence + `llms.txt`). Takes ~15 minutes. Fluent SDK chunks get boosted retrieval weight.
+
+To ingest additional directories manually:
+
+```bash
+uv run python rag/ingest.py --dirs platform-security integrate-applications
+```
+
+To ingest everything (slow):
+
+```bash
+uv run python rag/ingest.py --dirs   # no args = all 46k files
+```
 
 ### 4. Start the agent
 
 ```bash
-# Mac/Linux
 ./scripts/start.sh
+```
 
-# Windows (coming soon — use uv run directly for now)
+Launches the RAG service on `:8765` then opens Aider with the ServiceNow system prompt pre-loaded.
+
+Windows:
+```bash
 uv run uvicorn rag.server:app --host 127.0.0.1 --port 8765 &
 aider --config config/aider.conf.yml
-```
-
-Aider launches with the ServiceNow system prompt pre-loaded. Use `@`-references to pull specific docs into context:
-
-```
-@corpus/llms.txt explain the AIAgent() API
-@corpus/ServiceNowDocs/markdown/application-development/... build me a business rule
 ```
 
 ---
@@ -163,60 +170,73 @@ Aider launches with the ServiceNow system prompt pre-loaded. Use `@`-references 
 
 ```
 local_coding_agent/
-├── bootstrap.py           # Cross-platform bootstrap (Mac/Linux/Windows)
+├── bootstrap.py           # Cross-platform setup (Mac/Linux/Windows)
 ├── bootstrap.sh           # Mac/Linux wrapper
 ├── bootstrap.ps1          # Windows PowerShell wrapper
 ├── pyproject.toml         # uv-managed Python deps
+├── .env.example           # SN credential template (copy to .env)
 │
 ├── config/
-│   ├── aider.conf.yml     # Aider config — points at Ollama, loads system prompt
-│   └── system-prompt.md   # ServiceNow guardrails, Fluent SDK idioms, scope rules
+│   ├── aider.conf.yml     # Aider → Ollama, loads system prompt
+│   └── system-prompt.md   # ServiceNow guardrails, Fluent SDK idioms, live schema instructions
 │
-├── corpus/                # Fetched at setup, not committed
-│   ├── .gitignore
+├── corpus/                # Not committed — fetched at setup
 │   ├── fetch-docs.sh      # Pulls ServiceNowDocs + llms.txt
 │   ├── llms.txt           # Fluent SDK LLM-optimized reference
-│   └── ServiceNowDocs/    # 46k+ markdown files, australia branch
+│   └── ServiceNowDocs/    # Full 46k-file clone (australia branch)
 │
 ├── rag/
 │   ├── server.py          # FastAPI RAG service (localhost:8765)
 │   ├── ingest.py          # Chunking + embedding pipeline
-│   └── data/              # sqlite-vec DB (not committed)
+│   ├── sn_schema.py       # Live ServiceNow schema validation
+│   └── data/              # sqlite-vec DB + audit log (not committed)
 │
-└── scripts/
-    ├── start.sh           # Launch RAG service + Aider
-    ├── phase1-test.sh     # Phase 1 model gate
-    └── audit-export.sh    # Export audit log to CSV or JSON
+├── scripts/
+│   ├── start.sh           # Launch RAG service + Aider
+│   ├── phase1-test.sh     # Model gate test script
+│   └── audit-export.sh    # Export audit log to CSV or JSON
+│
+└── phase1-output/         # Model gate test outputs (reference)
 ```
 
 ---
 
-## Corpus
+## Corpus strategy
 
-The corpus is the secret weapon. Two layers:
+Three layers, loaded progressively:
 
-**Layer 1 — ServiceNow platform docs**
-- Full [ServiceNowDocs](https://github.com/ServiceNow/ServiceNowDocs) repo, `australia` branch
-- 46k+ markdown files across all product areas
-- Refreshed via `corpus/fetch-docs.sh`
+**Layer 1 — Focused core (ingested upfront, ~15 min)**
+- `llms.txt` — Fluent SDK API reference, boosted retrieval weight
+- `application-development/` — Fluent SDK, app engine, Now SDK (1,498 files)
+- `build-workflows/` — Flow Designer, WFA, subflows (695 files)
+- `now-intelligence/` — AI Agents, Now Assist, ML (1,170 files)
 
-**Layer 2 — Fluent SDK reference**
-- `llms.txt` from [servicenow.github.io/sdk](https://servicenow.github.io/sdk/llms.txt)
-- LLM-optimized index of all Fluent SDK guides and API references
-- Gets boosted retrieval weight — the base model has essentially zero Fluent training data
+**Layer 2 — On-demand expansion (automatic)**
+When a query scores below confidence threshold (0.4), the server greps the full local clone for matching files, embeds them, and re-retrieves. Newly embedded files stay in the DB — the agent gets smarter with every query.
 
-**Layer 3 (engagement-specific)**
-- Drop customer docs, runbooks, or schema exports into `corpus/customer-docs/`
-- Re-run `rag/ingest.py` to index them
-- Now the agent knows their CMDB conventions and governance rules — and none of it left the machine
+**Layer 3 — Engagement-specific**
+Drop customer runbooks, schema exports, or governance docs into `corpus/customer-docs/` and re-run ingest. The agent becomes their-implementation-aware, not just ServiceNow-aware — and none of it left the machine.
+
+---
+
+## Live schema validation
+
+When `.env` is configured with ServiceNow credentials, the RAG server queries the live instance before each generation:
+
+1. Detects `sn_*` / `sys_*` table names in the query
+2. Calls `sys_db_object` to verify the table exists
+3. Calls `sys_dictionary` to get real field names and types
+4. Injects a "Live ServiceNow Schema" block into the model's context
+
+The model is instructed to use only field names from that block and to flag any table marked `TABLE NOT FOUND ON THIS INSTANCE`. Prevents hallucinated table/field names from making it into generated code.
 
 ---
 
 ## Audit log
 
-Every query, every retrieval, every generated output is logged to a local SQLite database at `rag/data/audit.db`.
+Every query, retrieval, and generated output is logged to `rag/data/audit.db`.
 
-Schema: `id | timestamp | query | retrieved_sources | generated_output | model | profile`
+Schema: `id | timestamp | query | retrieved_sources | generated_output | model | profile | latency_ms`
 
 Export for customer review:
 
@@ -231,16 +251,14 @@ Export for customer review:
 
 ### Default: git clone and go
 
-Fresh machine to working agent in ~30 minutes (mostly model download). Run `bootstrap.py`, done.
+Fresh machine to working agent in ~30 minutes (mostly model download).
 
 ### Multi-customer: profile-based (Phase 3)
-
-When a second customer engagement appears, the repo grows a `profiles/` directory:
 
 ```
 profiles/
 ├── default.yml          # Generic ServiceNow
-├── customer-acme.yml    # ACME's corpus path, system prompt variant, audit destination
+├── customer-acme.yml    # ACME's corpus, system prompt variant, audit destination
 └── customer-foo.yml
 ```
 
@@ -248,17 +266,15 @@ profiles/
 ./scripts/start.sh --profile customer-acme
 ```
 
-Each profile swaps the corpus, system prompt, and audit destination without touching the base config.
-
 ---
 
-## Phase plan
+## Phase status
 
-| Phase | Status | Goal |
+| Phase | Status | Summary |
 |---|---|---|
-| Phase 1 | **Current** | Validate raw Ollama + Aider experience. Gate: TypeScript type-check pass. |
-| Phase 2 | Planned | FastAPI RAG service, structured audit log, corpus ingestion pipeline. |
-| Phase 3 | Future | Profile-based deployability when customer 2 appears. |
+| Phase 1 | ✅ Done | DeepSeek-Coder-V2-Lite selected. ~11s responses on M4 24GB. |
+| Phase 2 | 🔄 In progress | RAG service built. Ingest running. Schema validation wired. |
+| Phase 3 | Planned | Profile-based deployability when customer 2 appears. |
 
 ---
 
@@ -270,3 +286,4 @@ Each profile swaps the corpus, system prompt, and audit destination without touc
 - [Aider](https://aider.chat)
 - [sqlite-vec](https://github.com/asg017/sqlite-vec)
 - [uv](https://github.com/astral-sh/uv)
+- [DeepSeek-Coder-V2-Lite](https://huggingface.co/deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct)
