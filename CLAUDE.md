@@ -4,7 +4,7 @@
 
 A local, privacy-preserving coding agent specialized for ServiceNow AI Agents and the Fluent SDK. Runs entirely on an M4 MacBook Air (24GB). No data leaves the machine. Primary use case: customer POC demos where cloud tools are blocked by enterprise data sensitivity.
 
-GitHub: https://github.com/tdimaggio/locall_coding_agent
+GitHub: https://github.com/tdimaggio/local_coding_agent
 
 ## Stack (decided)
 
