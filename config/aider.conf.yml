@@ -1,0 +1,24 @@
+# Aider configuration for ServiceNow local agent
+# Targets local Ollama inference — no cloud API calls
+
+# Ollama API compatibility endpoint
+openai-api-base: http://localhost:11434/v1
+openai-api-key: ollama  # Ollama ignores this but Aider requires a value
+
+# Model — set to Phase 1 winner after gate evaluation
+# Options:
+#   qwen2.5-coder:32b
+#   deepseek-coder-v2:16b-lite-instruct
+model: qwen2.5-coder:32b
+
+# Editor model (for lighter tasks like diffs and summaries)
+# Use the faster model here regardless of main model choice
+editor-model: deepseek-coder-v2:16b-lite-instruct
+
+# Aider behavior
+auto-commits: false       # explicit git control
+dirty-commits: false
+suggest-shell-commands: false
+
+# Always load system prompt for ServiceNow context
+read: config/system-prompt.md

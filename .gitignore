@@ -1,0 +1,35 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+dist/
+*.egg-info/
+
+# uv
+.uv/
+
+# RAG data (sqlite-vec DB — can be rebuilt from corpus)
+rag/data/*.db
+rag/data/*.db-shm
+rag/data/*.db-wal
+
+# Corpus docs (fetched via corpus/fetch-docs.sh, not committed)
+corpus/ServiceNowDocs/
+corpus/llms.txt
+
+# Profiles with customer-specific config (never commit)
+profiles/customer-*.yml
+
+# Audit logs (stays local)
+audit/
+
+# Env
+.env
+.env.local
+
+# macOS
+.DS_Store
+
+# Editor
+.zed/

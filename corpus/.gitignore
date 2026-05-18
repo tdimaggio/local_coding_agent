@@ -1,0 +1,4 @@
+# Corpus content is fetched at setup time via fetch-docs.sh, not committed
+ServiceNowDocs/
+llms.txt
+*.db
