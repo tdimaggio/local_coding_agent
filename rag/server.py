@@ -25,6 +25,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from rag.sn_schema import build_schema_context, is_configured as sn_configured
+
 REPO_DIR = Path(__file__).parent.parent.resolve()
 DEFAULT_DB = REPO_DIR / "rag" / "data" / "rag.db"
 AUDIT_DB = REPO_DIR / "rag" / "data" / "audit.db"
@@ -138,6 +140,7 @@ def health():
         "ollama_api": OLLAMA_API,
         "embed_model": EMBED_MODEL,
         "main_model": MAIN_MODEL,
+        "sn_schema_validation": "enabled" if sn_configured() else "disabled (no .env credentials)",
     }
 
 
@@ -217,12 +220,16 @@ def generate(req: GenerateRequest):
     system_prompt_path = REPO_DIR / "config" / "system-prompt.md"
     system_prompt = system_prompt_path.read_text() if system_prompt_path.exists() else ""
 
+    # Pre-generation: inject live schema from connected ServiceNow instance
+    schema_context = build_schema_context(req.query)
+
     augmented_prompt = f"""{system_prompt}
 
 ## Relevant documentation
 
 {context_text}
-
+{f'''
+{schema_context}''' if schema_context else ""}
 ---
 
 ## Task
