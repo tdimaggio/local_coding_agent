@@ -89,6 +89,11 @@ def get_audit_conn() -> sqlite3.Connection:
     return conn
 
 
+def normalize(v: list[float]) -> list[float]:
+    import math
+    mag = math.sqrt(sum(x * x for x in v))
+    return [x / mag for x in v] if mag > 0 else v
+
 def pack_vector(v: list[float]) -> bytes:
     return struct.pack(f"{len(v)}f", *v)
 
@@ -152,7 +157,7 @@ def health():
 def retrieve(req: RetrieveRequest):
     t0 = time.time()
 
-    vec = embed_query(req.query)
+    vec = normalize(embed_query(req.query))
     packed = pack_vector(vec)
 
     conn = get_rag_conn()
@@ -193,7 +198,7 @@ def retrieve(req: RetrieveRequest):
             "text": row["text"],
             "token_count": row["token_count"],
             "distance": row["distance"],
-            "score": (1 - row["distance"]) * boost,
+            "score": max(0.0, 1 - (row["distance"] ** 2) / 2) * boost,
         })
 
     boosted.sort(key=lambda x: x["score"], reverse=True)
@@ -223,7 +228,7 @@ def retrieve(req: RetrieveRequest):
                     "source_type": row["source_type"], "title": row["title"],
                     "text": row["text"], "token_count": row["token_count"],
                     "distance": row["distance"],
-                    "score": (1 - row["distance"]) * boost,
+                    "score": max(0.0, 1 - (row["distance"] ** 2) / 2) * boost,
                     "on_demand": True,
                 })
             boosted.sort(key=lambda x: x["score"], reverse=True)

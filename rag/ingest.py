@@ -70,20 +70,52 @@ except ImportError:
 # ── Chunking ──────────────────────────────────────────────────────────────────
 
 def chunk_llms_txt(text: str, source_path: str) -> list[dict]:
-    """Split llms.txt on ## section headings — each section is one chunk."""
-    sections = re.split(r'\n(?=## )', text.strip())
+    """
+    Split llms.txt into one chunk per guide/API entry.
+    Each bullet line like '- [business-rule-guide](...): description' becomes its own chunk,
+    grouped with its parent section heading for context.
+    Falls back to section-level splitting for non-list content.
+    """
     chunks = []
-    for section in sections:
-        section = section.strip()
-        if not section:
-            continue
-        title = section.splitlines()[0].lstrip('#').strip()
+    current_section = ""
+    buffer_lines: list[str] = []
+
+    def flush_entry(lines: list[str], section: str) -> None:
+        text_block = "\n".join(lines).strip()
+        if not text_block:
+            return
+        # Extract title from first line (markdown link label)
+        title_match = re.search(r'\[([^\]]+)\]', lines[0]) if lines else None
+        title = title_match.group(1) if title_match else section
         chunks.append({
-            "text": section,
+            "text": f"[{section}]\n{text_block}",
             "source": source_path,
-            "source_type": "fluent-sdk",  # boosted priority at retrieval
+            "source_type": "fluent-sdk",
             "title": title,
         })
+
+    for line in text.splitlines():
+        if line.startswith("## ") or line.startswith("# "):
+            if buffer_lines:
+                flush_entry(buffer_lines, current_section)
+                buffer_lines = []
+            current_section = line.lstrip("#").strip()
+        elif line.startswith("- ") and buffer_lines:
+            # Start of a new entry within a section — flush previous
+            flush_entry(buffer_lines, current_section)
+            buffer_lines = [line]
+        elif line.startswith("- "):
+            buffer_lines = [line]
+        elif buffer_lines:
+            buffer_lines.append(line)
+        else:
+            # Preamble before first section
+            if line.strip():
+                buffer_lines.append(line)
+
+    if buffer_lines:
+        flush_entry(buffer_lines, current_section)
+
     return chunks
 
 
@@ -183,6 +215,12 @@ def embed(texts: list[str]) -> list[list[float] | None]:
     return vectors
 
 
+def normalize(v: list[float]) -> list[float]:
+    """L2-normalize a vector to unit length for cosine similarity via L2 distance."""
+    import math
+    mag = math.sqrt(sum(x * x for x in v))
+    return [x / mag for x in v] if mag > 0 else v
+
 def pack_vector(v: list[float]) -> bytes:
     return struct.pack(f"{len(v)}f", *v)
 
@@ -226,6 +264,7 @@ def content_hash(text: str) -> str:
 
 
 def upsert_chunk(conn: sqlite3.Connection, chunk: dict, vector: list[float]) -> bool:
+    vector = normalize(vector)
     """Insert chunk if not already present (by content hash). Returns True if inserted."""
     h = content_hash(chunk["text"])
     existing = conn.execute("SELECT id FROM chunks WHERE hash = ?", (h,)).fetchone()

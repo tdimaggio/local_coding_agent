@@ -273,7 +273,7 @@ profiles/
 | Phase | Status | Summary |
 |---|---|---|
 | Phase 1 | ✅ Done | DeepSeek-Coder-V2-Lite selected. ~11s responses on M4 24GB. |
-| Phase 2 | 🔄 In progress | RAG service built. Ingest running. Schema validation wired. |
+| Phase 2 | ✅ Done | RAG service live. 8,197 chunks indexed (179 Fluent SDK + 8,018 docs). Schema validation wired. Scores validated. |
 | Phase 3 | Planned | Profile-based deployability when customer 2 appears. |
 
 ---
