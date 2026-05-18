@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# bootstrap.sh — Mac/Linux convenience wrapper around bootstrap.py
-# For Windows: run `python bootstrap.py` directly
+# bootstrap.sh — Mac/Linux wrapper around bootstrap.py.
+# bootstrap.py handles its own prereq detection / install, so we run with
+# system python3 here (uv may not exist yet on a fresh machine).
 set -e
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Prefer uv-managed Python, fall back to system Python
-if command -v uv &>/dev/null; then
-  exec uv run python "$REPO_DIR/bootstrap.py" "$@"
-else
-  exec python3 "$REPO_DIR/bootstrap.py" "$@"
+if ! command -v python3 &>/dev/null; then
+  echo "ERROR: python3 not found. Install Python 3.11+ from https://python.org" >&2
+  exit 1
 fi
+
+exec python3 "$REPO_DIR/bootstrap.py" "$@"

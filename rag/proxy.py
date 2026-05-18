@@ -102,6 +102,12 @@ async def chat_completions(request: Request):
     else:
         print(f"  [proxy] Skipping RAG (short message): {user_content[:40]!r}")
 
+    # Strip litellm provider prefix (e.g. "openai/deepseek-...") before forwarding.
+    # Aider/litellm requires the prefix to route; Ollama wants the bare tag.
+    model = body.get("model", "")
+    if "/" in model:
+        body["model"] = model.split("/", 1)[1]
+
     body = {**body, "messages": messages}
     stream = body.get("stream", False)
 

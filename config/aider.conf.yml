@@ -8,10 +8,12 @@ openai-api-key: ollama  # ignored by proxy/Ollama but Aider requires a value
 
 # Phase 1 winner: DeepSeek-Coder-V2-Lite (~11s vs Qwen 32B which was unusably slow)
 # Qwen 32B benched — 19GB barely fits in 24GB, memory bandwidth kills it
-model: deepseek-coder-v2:16b-lite-instruct-q4_K_M
+# `openai/` prefix tells litellm to dispatch via OpenAI-compatible path (our proxy).
+# The proxy strips the prefix before forwarding to Ollama.
+model: openai/deepseek-coder-v2:16b-lite-instruct-q4_K_M
 
 # Editor model — same model for now, revisit if a lighter option makes sense
-editor-model: deepseek-coder-v2:16b-lite-instruct-q4_K_M
+editor-model: openai/deepseek-coder-v2:16b-lite-instruct-q4_K_M
 
 # Aider behavior
 auto-commits: false       # explicit git control

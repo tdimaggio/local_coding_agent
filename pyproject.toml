@@ -20,8 +20,8 @@ ingest = [
     "tree-sitter-typescript>=0.23.0",
 ]
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "pytest>=8.0.0",
     "ruff>=0.4.0",
 ]

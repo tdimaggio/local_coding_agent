@@ -11,20 +11,25 @@ Built for enterprise POC scenarios where tools like Claude Code are blocked by d
 ```bash
 git clone https://github.com/tdimaggio/local_coding_agent.git
 cd local_coding_agent
-cp .env.example .env  # add your SN instance creds for schema validation
 
-# Mac/Linux
+# Mac/Linux — interactive installer, detects prereqs, auto-installs uv + aider,
+# pulls models, fetches corpus, builds the RAG index. Idempotent.
 ./bootstrap.sh
 
 # Windows
 .\bootstrap.ps1
 ```
 
-Then ingest the corpus and start coding:
+Then start the agent:
 
 ```bash
-uv run python rag/ingest.py   # ~15 min focused ingest
-./scripts/start.sh            # RAG service + Aider
+./scripts/start.sh            # RAG service + proxy + Aider
+```
+
+Optional: add ServiceNow creds for live schema validation:
+
+```bash
+cp .env.example .env  # then edit
 ```
 
 ---
@@ -89,73 +94,70 @@ This agent flips the script: everything runs locally, the corpus is indexed loca
 
 ## Prerequisites
 
-| Tool | Version | Install |
-|---|---|---|
-| Python | 3.11+ | [python.org](https://python.org) |
-| uv | latest | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| git | any | [git-scm.com](https://git-scm.com) |
-| Ollama | latest | [ollama.com](https://ollama.com) |
-| Aider | latest | `uv tool install aider-chat` |
+Only **Python 3.11+** and **git** are hard requirements — bootstrap installs everything else for you.
 
-Ollama must be **running** before bootstrap. On Mac/Linux: `ollama serve`. On Windows: start from system tray.
+| Tool | How bootstrap handles it |
+|---|---|
+| Python 3.11+ | Required; install yourself ([python.org](https://python.org)). Bootstrap exits with a hint if missing. |
+| git | Required; install yourself ([git-scm.com](https://git-scm.com)). Bootstrap exits with a hint if missing. |
+| uv | **Auto-installed** to `~/.local/bin` if missing (curl installer on Mac/Linux, PowerShell on Windows). |
+| Aider | **Auto-installed** via `uv tool install --python 3.12 aider-chat`. Pinned to 3.12 because scipy lacks wheels for Python 3.14+. |
+| Ollama | **Prompted** before install. On macOS uses `brew install ollama` if Homebrew is present, else points at the .dmg. On Linux uses the official curl installer. On Windows points at the installer URL. |
+
+Ollama must be **running** for model pulls to work. The installer will try to start it for you on macOS (`open -a Ollama`) and Linux (`systemctl --user start ollama`) and poll for readiness.
 
 ---
 
 ## Quick start
 
-### 1. Bootstrap
+### 1. Bootstrap (6 numbered steps)
 
 ```bash
-./bootstrap.sh        # Mac/Linux
-.\bootstrap.ps1       # Windows
-python bootstrap.py   # Any platform
+./bootstrap.sh                 # Mac/Linux
+.\bootstrap.ps1                # Windows
+python3 bootstrap.py           # Any platform — direct
 ```
 
-Bootstrap is idempotent — safe to re-run. It checks prereqs, pulls models, runs `uv sync`, and fetches the corpus.
+Idempotent — safe to re-run. Runs six phases:
 
-> Model pull: `deepseek-coder-v2:16b-lite-instruct-q4_K_M` (~10GB) + `nomic-embed-text` (~274MB)
+1. **Detect prerequisites** — Python, git, uv, aider, Ollama (CLI + service). Prints a status table.
+2. **Install missing prerequisites** — auto-install for `uv` and `aider`; prompt for Ollama; exit with a hint for Python/git.
+3. **Pull models** — `deepseek-coder-v2:16b-lite-instruct-q4_K_M` (~10 GB), `nomic-embed-text` (~274 MB).
+4. **Set up Python environment** — `uv sync` into `.venv/`.
+5. **Fetch corpus** — clone ServiceNowDocs (australia branch) and pull `llms.txt`.
+6. **Build the RAG index** — chunk + embed (~6 min on M4 24GB). Skipped if `rag/data/rag.db` already exists.
+
+Flags:
+
+```bash
+./bootstrap.sh --check         # detect prereqs + show install plan, then exit
+./bootstrap.sh --yes           # non-interactive, auto-confirm all prompts
+./bootstrap.sh --skip-models   # skip step 3
+./bootstrap.sh --skip-corpus   # skip step 5
+./bootstrap.sh --skip-ingest   # skip step 6
+```
 
 ### 2. Configure credentials (optional — enables live schema guardrails)
 
 ```bash
 cp .env.example .env
-# Set SN_INSTANCE, SN_USERNAME, SN_PASSWORD
+# Set SN_INSTANCE, SN_USERNAME, SN_PASSWORD (or SN_TOKEN)
 ```
 
-Without `.env`, the agent works fine — schema validation is silently skipped.
+Without `.env`, the agent works fine — schema validation is silently skipped. Verify activation via `GET http://localhost:8765/health` after starting; the `sn_schema_validation` field shows `enabled` vs `disabled`.
 
-### 3. Ingest the corpus
-
-```bash
-uv run python rag/ingest.py
-```
-
-Embeds the focused core corpus (~3.4k files: app dev, workflows, AI intelligence + `llms.txt`). Takes ~15 minutes. Fluent SDK chunks get boosted retrieval weight.
-
-To ingest additional directories manually:
-
-```bash
-uv run python rag/ingest.py --dirs platform-security integrate-applications
-```
-
-To ingest everything (slow):
-
-```bash
-uv run python rag/ingest.py --dirs   # no args = all 46k files
-```
-
-### 4. Start the agent
+### 3. Start the agent
 
 ```bash
 ./scripts/start.sh
 ```
 
-Launches the RAG service (`:8765`), the RAG proxy (`:8766`), then opens Aider. Every prompt you type in Aider automatically gets ServiceNow docs retrieved and injected — no extra steps.
+Launches the RAG service (`:8765`), the RAG proxy (`:8766`), then opens Aider in your terminal. Every prompt >40 chars automatically gets ServiceNow docs retrieved and injected — no extra steps.
 
-Windows:
-```bash
-uv run uvicorn rag.server:app --host 127.0.0.1 --port 8765 &
-uv run uvicorn rag.proxy:app --host 127.0.0.1 --port 8766 &
+Windows equivalent:
+```powershell
+uv run uvicorn rag.server:app --host 127.0.0.1 --port 8765
+uv run uvicorn rag.proxy:app  --host 127.0.0.1 --port 8766
 aider --config config/aider.conf.yml
 ```
 
@@ -269,8 +271,15 @@ profiles/
 | Phase | Status | Summary |
 |---|---|---|
 | Phase 1 | ✅ Done | DeepSeek-Coder-V2-Lite selected. ~11s responses on M4 24GB. |
-| Phase 2 | ✅ Done | RAG service live. 8,197 chunks indexed (179 Fluent SDK + 8,018 docs). Schema validation wired. Scores validated. |
+| Phase 2 | ✅ plumbing / ⚠️ corpus | RAG service, proxy, schema validation, audit log all live and tested end-to-end. **Known limitation**: corpus only contains the SDK docs index (`llms.txt`), not content — see *Known issues* below. |
 | Phase 3 | Planned | Profile-based deployability when customer 2 appears. |
+
+## Known issues / next moves
+
+- **Corpus is index-only (the priority).** `corpus/llms.txt` is a list of links, not the actual Fluent SDK content. Each link entry includes a `?embed=true` URL that returns real content. The fix is `corpus/fetch-sdk-content.sh` that parses `llms.txt`, fetches each `?embed=true` URL to `corpus/sdk-embed/<slug>.md`, then re-runs `rag/ingest.py --reset`. Discovery: `https://servicenow.github.io/sdk/versions.json` lists versions; pin to the most recent non-prerelease (currently `4.6.0`). This is the single largest unlock for output quality.
+- **Anti-hallucination prompt rules not yet validated.** `config/system-prompt.md` was tightened with a top-priority anti-hallucination section after early testing produced invented imports and class-extension patterns. Re-test the same AiTool prompt after the corpus fix lands.
+- **Aider warns *"Unknown context window size"*** for the local model. Harmless but means Aider applies a conservative default; the model is actually 128K context. Configure via `extra-model-settings` in `config/aider.conf.yml`.
+- **`--profile` flag is plumbed but inert.** `scripts/start.sh` accepts `--profile <name>` but doesn't do anything with it yet. Phase 3 work.
 
 ---
 
