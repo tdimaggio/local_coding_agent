@@ -49,28 +49,22 @@ This agent flips the script: everything runs locally, the corpus is indexed loca
                      │  OpenAI-compatible API
                      ▼
 ┌──────────────────────────────────────────────────┐
-│  Ollama  (localhost:11434)                       │
-│  ├── DeepSeek-Coder-V2-Lite Q4  (main model)    │
-│  │     Phase 1 winner — ~11s responses on M4     │
-│  └── nomic-embed-text  (embeddings)              │
-└────────────────────┬─────────────────────────────┘
-                     │  RAG retrieval
-                     ▼
-┌──────────────────────────────────────────────────┐
-│  FastAPI RAG Service  (localhost:8765)           │
-│  ├── sqlite-vec  vector store                    │
-│  ├── On-demand expansion from local clone        │
-│  ├── Live SN schema injection (pre-generation)   │
-│  ├── Audit log  every query + result, on-disk    │
-│  └── Corpus                                      │
-│        llms.txt           Fluent SDK reference   │
-│        application-development/  core SDK docs   │
-│        build-workflows/          flows + WFA     │
-│        now-intelligence/         AI Agents       │
-│        + on-demand from full 46k clone           │
-└────────────────────┬─────────────────────────────┘
-                     │  Table REST API
-                     ▼
+│  RAG Proxy  (localhost:8766)                     │
+│  Intercepts every Aider request, prepends RAG    │
+│  context into the system message, then forwards  │
+└──────┬──────────────────────┬────────────────────┘
+       │  /retrieve           │  augmented request
+       ▼                      ▼
+┌─────────────────┐  ┌────────────────────────────┐
+│  FastAPI RAG    │  │  Ollama  (localhost:11434)  │
+│  Service :8765  │  │  ├── DeepSeek-Coder-V2-Lite │
+│  ├── sqlite-vec │  │  │     ~11s on M4 24GB      │
+│  ├── On-demand  │  │  └── nomic-embed-text        │
+│  ├── SN schema  │  └────────────────────────────┘
+│  └── Audit log  │
+└────────┬────────┘
+         │  Table REST API (optional)
+         ▼
 ┌──────────────────────────────────────────────────┐
 │  ServiceNow Instance  (optional, for guardrails) │
 │  ├── sys_db_object   table validation            │
@@ -87,7 +81,7 @@ This agent flips the script: everything runs locally, the corpus is indexed loca
 | Focused corpus + on-demand expansion | Core 3.4k files ingest in ~15 min. Low-confidence queries automatically grep the full 46k clone, embed matching files, and re-retrieve. |
 | Live schema injection | Before generation, RAG server pulls real table/field names from the connected SN instance via Table REST API. Model codes against verified schema, not training data. |
 | sqlite-vec over Chroma | Single file, no daemon, backs up like any SQLite DB. |
-| Aider over Cline | Terminal-native, git-aware, transparent. `--openai-api-base` points it at Ollama. |
+| Aider → RAG proxy | Aider points at a thin local proxy (:8766) instead of Ollama directly. Proxy fetches RAG context and injects it into every request transparently — zero Aider workflow change. |
 | No Docker | Ollama in Docker on Mac kills Metal GPU passthrough — 5-10x slower inference. |
 | Audit log from day 1 | Schema locked from the start: timestamp, query, retrieved sources, output, model, profile. |
 
@@ -156,11 +150,12 @@ uv run python rag/ingest.py --dirs   # no args = all 46k files
 ./scripts/start.sh
 ```
 
-Launches the RAG service on `:8765` then opens Aider with the ServiceNow system prompt pre-loaded.
+Launches the RAG service (`:8765`), the RAG proxy (`:8766`), then opens Aider. Every prompt you type in Aider automatically gets ServiceNow docs retrieved and injected — no extra steps.
 
 Windows:
 ```bash
 uv run uvicorn rag.server:app --host 127.0.0.1 --port 8765 &
+uv run uvicorn rag.proxy:app --host 127.0.0.1 --port 8766 &
 aider --config config/aider.conf.yml
 ```
 
@@ -187,6 +182,7 @@ local_coding_agent/
 │
 ├── rag/
 │   ├── server.py          # FastAPI RAG service (localhost:8765)
+│   ├── proxy.py           # OpenAI-compatible proxy — Aider → RAG → Ollama (localhost:8766)
 │   ├── ingest.py          # Chunking + embedding pipeline
 │   ├── sn_schema.py       # Live ServiceNow schema validation
 │   └── data/              # sqlite-vec DB + audit log (not committed)
