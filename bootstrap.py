@@ -22,7 +22,7 @@ OLLAMA_API = "http://localhost:11434"
 
 CANDIDATE_MODELS = [
     "qwen2.5-coder:32b",
-    "deepseek-coder-v2:16b-lite-instruct",
+    "deepseek-coder-v2:16b-lite-instruct-q4_K_M",
 ]
 EMBED_MODEL = "nomic-embed-text"
 

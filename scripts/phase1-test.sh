@@ -16,7 +16,7 @@ Import from @servicenow/sdk/core. Include all necessary types and exports."
 
 MODELS=(
   "qwen2.5-coder:32b"
-  "deepseek-coder-v2:16b-lite-instruct"
+  "deepseek-coder-v2:16b-lite-instruct-q4_K_M"
 )
 
 for model in "${MODELS[@]}"; do

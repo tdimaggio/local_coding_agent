@@ -13,7 +13,7 @@ model: qwen2.5-coder:32b
 
 # Editor model (for lighter tasks like diffs and summaries)
 # Use the faster model here regardless of main model choice
-editor-model: deepseek-coder-v2:16b-lite-instruct
+editor-model: deepseek-coder-v2:16b-lite-instruct-q4_K_M
 
 # Aider behavior
 auto-commits: false       # explicit git control

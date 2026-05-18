@@ -46,7 +46,7 @@ This agent flips the script: everything runs locally, the corpus is indexed loca
 │  Ollama  (localhost:11434)                       │
 │  ├── Main model  (Phase 1 gate picks the winner) │
 │  │     Qwen2.5-Coder-32B Q4  ~15-20 tok/sec     │
-│  │     DeepSeek-Coder-V2-Lite (16B MoE, faster) │
+│  │     DeepSeek-Coder-V2-Lite Q4 (16B MoE, faster) │
 │  └── nomic-embed-text  (embeddings)              │
 └────────────────────┬─────────────────────────────┘
                      │  RAG retrieval
